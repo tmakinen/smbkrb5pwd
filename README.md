@@ -135,7 +135,8 @@ is licensed under the OpenLDAP Public License.
 
 Copyright 2004-2010 The OpenLDAP Foundation.  
 Portions Copyright 2004-2005 Howard Chu, Symas Corp. All rights reserved.  
-Portions Copyright 2010-2013 Opinsys Oy.
+Portions Copyright 2010-2013 Opinsys Oy.  
+Portions Copyright 2026 Timo Mäkinen.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted only as authorized by the OpenLDAP Public License.
