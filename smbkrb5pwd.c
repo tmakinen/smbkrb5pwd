@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #ifndef SLAPD_OVER_SMBKRB5PWD
 #define SLAPD_OVER_SMBKRB5PWD SLAPD_MOD_DYNAMIC
@@ -38,12 +40,12 @@
 
 #include <slap.h>
 
-#include "config.h"
+#include "slap-config.h"
 
 #include <krb5/krb5.h>
 #include <kadm5/admin.h>
 
-#define KRB5_KEYTAB "/etc/ldap/slapd.d/openldap-krb5.keytab"
+#define KRB5_KEYTAB "/etc/openldap/smbkrb5pwd.keytab"
 
 static AttributeDescription *ad_objectclass;
 static AttributeDescription *ad_uid;
@@ -154,10 +156,9 @@ lookup_admin_princstr(
 
 	rc = -1;
 
-#ifdef SMBKRB5PWD_KADM5_CLNT
 	if (gethostname(hostname, HOST_NAME_MAX+1)     ||
 	    getaddrinfo(hostname, NULL, NULL, &host_addr)) {
-		Log0(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
 		     "smbkrb5pwd : an error occurred in gethostname()"
 		     " or getaddrinfo(), check your dns settings\n");
 		goto error;
@@ -165,7 +166,7 @@ lookup_admin_princstr(
 
 	if (getnameinfo(host_addr->ai_addr, host_addr->ai_addrlen, fqdn,
 			NI_MAXHOST, NULL, 0, 0)) {
-		Log0(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
 		     "smbkrb5pwd : an error occurred in getnameinfo(),"
 		     " check your dns settings\n");
 		goto error_with_host_addr;
@@ -175,11 +176,6 @@ lookup_admin_princstr(
 			       + strlen(fqdn)
 			       + sizeof("@")
 			       + strlen(kerberos_realm) + 1;
-#endif
-
-#ifdef SMBKRB5PWD_KADM5_SRV
-	size_t princstr_size = strlen("root/admin@") + strlen(kerberos_realm) + 1;
-#endif
 
 	if (*admin_princstr)
 		free(*admin_princstr);
@@ -187,13 +183,8 @@ lookup_admin_princstr(
 	if ((*admin_princstr = calloc(princstr_size, 1)) == NULL)
 		goto error_with_host_addr;
 
-#ifdef SMBKRB5PWD_KADM5_CLNT
 	snprintf(*admin_princstr, princstr_size, "smbkrb5pwd/%s@%s", fqdn,
 		 kerberos_realm);
-#endif
-#ifdef SMBKRB5PWD_KADM5_SRV
-	snprintf(*admin_princstr, princstr_size, "root/admin@%s", kerberos_realm);
-#endif
 
 	rc = 0;
 
@@ -243,25 +234,25 @@ static int krb5_set_passwd(
 	if (worker_pid == -1) {
 		switch (errno) {
 			case EAGAIN:
-				Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+				Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 				      "smbkrb5pwd %s : failed to fork process for password change (EAGAIN)!\n",
 				      op->o_log_prefix);
 
 				return LDAP_LOCAL_ERROR;
 			case ENOMEM:
-				Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+				Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 				      "smbkrb5pwd %s : failed to fork process for password change (ENOMEM - No memory)!\n",
 				      op->o_log_prefix);
 
 				return LDAP_LOCAL_ERROR;
 			case ENOSYS:
-				Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+				Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 				      "smbkrb5pwd %s : failed to fork process for password change (ENOSYS - Not supported)!\n",
 				      op->o_log_prefix);
 
 				return LDAP_LOCAL_ERROR;
 			default:
-				Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+				Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 				      "smbkrb5pwd %s : failed to fork process for password change!\n",
 				      op->o_log_prefix);
 
@@ -270,17 +261,24 @@ static int krb5_set_passwd(
 	}
 
 	if (worker_pid) {
-		waitpid(worker_pid, &status, 0);
+		while (waitpid(worker_pid, &status, 0) == -1) {
+			if (errno == EINTR)
+				continue;
+			Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+			      "smbkrb5pwd %s : failed waiting for password change process\n",
+			      op->o_log_prefix);
+			return LDAP_LOCAL_ERROR;
+		}
 
-		if (status == SIGALRM) {
-			Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		if (WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM) {
+			Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 			      "smbkrb5pwd %s : forked password change process did not complete in 15s\n",
 			      op->o_log_prefix);
 
 			return LDAP_LOCAL_ERROR;
 		}
 
-		return status;
+		return WIFEXITED(status) ? WEXITSTATUS(status) : LDAP_LOCAL_ERROR;
 	}
 
 	signal(SIGALRM, SIG_DFL);
@@ -298,7 +296,7 @@ static int krb5_set_passwd(
 
 	a_uid = attr_find(e->e_attrs, ad_uid);
 	if (!a_uid) {
-		Log2(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 		      "smbkrb5pwd %s : could not find uid in entry: %s\n",
 		      op->o_log_prefix,
 		      ldap_err2string(LDAP_NO_SUCH_ATTRIBUTE));
@@ -314,7 +312,7 @@ static int krb5_set_passwd(
 
 	retval = kadm5_init_krb5_context(&context);
 	if (retval) {
-		Log3(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 		     "smbkrb5pwd %s : kadm5_init_krb5_context() failed"
 		     " for user %s: %s\n",
 		     op->o_log_prefix, user_uid, error_message(retval));
@@ -325,24 +323,14 @@ static int krb5_set_passwd(
 	params.mask |= KADM5_CONFIG_REALM;
 	params.realm = pi->kerberos_realm;
 
-#ifdef SMBKRB5PWD_KADM5_SRV
-	retval = kadm5_init_with_password(context, pi->admin_princstr, NULL,
-					  NULL, &params,
-					  KADM5_STRUCT_VERSION,
-					  KADM5_API_VERSION_3, NULL,
-					  &kadm5_handle);
-#endif
-
-#ifdef SMBKRB5PWD_KADM5_CLNT
         retval = kadm5_init_with_skey(context, pi->admin_princstr, KRB5_KEYTAB,
                                  KADM5_ADMIN_SERVICE, &params,
                                  KADM5_STRUCT_VERSION,
                                  KADM5_API_VERSION_3, NULL,
                                  &kadm5_handle);
-#endif
 
 	if (retval) {
-		Log4(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 		      "smbkrb5pwd %s : kadm5_init_with_password() failed"
 		      " for user %s (%s): %s\n",
   		      op->o_log_prefix, user_uid, pi->admin_princstr, error_message(retval));
@@ -363,7 +351,7 @@ static int krb5_set_passwd(
 
 	retval = krb5_parse_name(context, user_princstr, &princ.principal);
 	if (retval) {
-		Log3(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 		     "smbkrb5pwd %s : krb5_parse_name() failed"
 		     " for user %s: %s\n",
 		     op->o_log_prefix, user_princstr, error_message(retval));
@@ -376,7 +364,7 @@ static int krb5_set_passwd(
 	retval = kadm5_create_principal(kadm5_handle, &princ, create_mask,
 					user_password);
 	if (retval == KADM5_OK) {
-		Log2(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
 		     "smbkrb5pwd %s : created principal for user %s\n",
 		     op->o_log_prefix, user_princstr);
 		rc = LDAP_SUCCESS;
@@ -385,7 +373,7 @@ static int krb5_set_passwd(
 		retval = kadm5_chpass_principal(kadm5_handle, princ.principal,
 						user_password);
 		if (retval) {
-			Log3(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+			Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 			     "smbkrb5pwd %s : kadm5_chpass_principal() failed "
 			     "for user %s: %s\n",
 			     op->o_log_prefix, user_princstr,
@@ -393,13 +381,13 @@ static int krb5_set_passwd(
 			rc = LDAP_CONNECT_ERROR;
 			goto mitkrb_error_with_princ;
 		} else {
-			Log2(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
+			Log(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
 			     "smbkrb5pwd %s : changed password for user %s\n",
 			     op->o_log_prefix, user_princstr);
 			rc = LDAP_SUCCESS;
 		}
 	} else {
-		Log3(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
 		     "smbkrb5pwd %s : Problem creating principal for user %s: "
 		     "%s\n", op->o_log_prefix, user_princstr,
 		     error_message(retval));
@@ -452,7 +440,7 @@ static int smbkrb5pwd_exop_passwd(
 	rc = SLAP_CB_CONTINUE;
 	if (pi->oc_requiredObjectclass &&
 	    !is_entry_objectclass(e, pi->oc_requiredObjectclass, 0)) {
-		Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_NOTICE,
 	     	     "smbkrb5pwd %s : an entry is not of required"
 		     " objectClass\n",
 	     	     op->o_log_prefix);
@@ -621,17 +609,23 @@ static ConfigTable smbkrb5pwd_cfats[] = {
 		"( OLcfgCtAt:1.3 NAME 'olcSmbKrb5PwdCanChange' "
 		"DESC 'Credentials minimum validity interval' "
 		"SYNTAX OMsInteger SINGLE-VALUE )", NULL, NULL },
-	{ "smbkrb5pwd-krb5realm", "arg",
+	{ "smbkrb5pwd-realm", "arg",
 		2, 2, 0, ARG_MAGIC|ARG_STRING|PC_SMB_KRB5REALM, smbkrb5pwd_cf_func,
 		"( OLcfgCtAt:1.4 NAME 'olcSmbKrb5PwdKrb5Realm' "
 		"DESC 'Kerberos5 realm' "
 		"SYNTAX OMsDirectoryString )", NULL, NULL },
-	{ "smbkrb5pwd-requiredclass", "arg",
+	{ "smbkrb5pwd-krb5realm", "arg",
+		2, 2, 0, ARG_MAGIC|ARG_STRING|PC_SMB_KRB5REALM,
+		smbkrb5pwd_cf_func, NULL, NULL, NULL },
+	{ "smbkrb5pwd-required-class", "arg",
 		2, 2, 0, ARG_MAGIC|ARG_STRING|PC_SMB_REQUIREDCLASS,
 		smbkrb5pwd_cf_func,
 		"( OLcfgCtAt:1.5 NAME 'olcSmbKrb5PwdRequiredClass' "
 		"DESC 'Required objectClass' "
 		"SYNTAX OMsDirectoryString )", NULL, NULL },
+	{ "smbkrb5pwd-requiredclass", "arg",
+		2, 2, 0, ARG_MAGIC|ARG_STRING|PC_SMB_REQUIREDCLASS,
+		smbkrb5pwd_cf_func, NULL, NULL, NULL },
 
 	{ NULL, NULL, 0, 0, 0, ARG_IGNORED }
 };
@@ -690,6 +684,23 @@ smbkrb5pwd_cf_func( ConfigArgs *c )
 			}
 			break;
 
+		case PC_SMB_KRB5REALM:
+			if ( pi->kerberos_realm ) {
+				c->value_string = ch_strdup( pi->kerberos_realm );
+			} else {
+				rc = 1;
+			}
+			break;
+
+		case PC_SMB_REQUIREDCLASS:
+			if ( pi->oc_requiredObjectclass ) {
+				c->value_string = ch_strdup(
+					pi->oc_requiredObjectclass->soc_cname.bv_val );
+			} else {
+				rc = 1;
+			}
+			break;
+
 		default:
 			assert( 0 );
 			rc = 1;
@@ -714,6 +725,17 @@ smbkrb5pwd_cf_func( ConfigArgs *c )
 				m = verb_to_mask( c->line, smbkrb5pwd_modules );
 				pi->mode &= ~m;
 			}
+			break;
+
+		case PC_SMB_KRB5REALM:
+			free( pi->kerberos_realm );
+			pi->kerberos_realm = NULL;
+			free( pi->admin_princstr );
+			pi->admin_princstr = NULL;
+			break;
+
+		case PC_SMB_REQUIREDCLASS:
+			pi->oc_requiredObjectclass = NULL;
 			break;
 
 		default:
@@ -784,7 +806,7 @@ smbkrb5pwd_cf_func( ConfigArgs *c )
 					   &pi->admin_princstr);
 		if (rc)
 			return rc;
-		Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_INFO,
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_INFO,
 		     "smbkrb5pwd : using admin principal %s\n",
 		      pi->admin_princstr);
 		break;
@@ -792,7 +814,7 @@ smbkrb5pwd_cf_func( ConfigArgs *c )
 
 	case PC_SMB_REQUIREDCLASS: {
 		if (!(pi->oc_requiredObjectclass = oc_find(c->value_string))) {
-			Log1(LDAP_DEBUG_ANY, LDAP_LEVEL_INFO,
+			Log(LDAP_DEBUG_ANY, LDAP_LEVEL_INFO,
 			     "smbkrb5pwd : could not find required "
 			     "objectclass %s\n",
 			     c->value_string);
