@@ -197,6 +197,7 @@ error:
 
 static int krb5_set_passwd(
 	Operation *op,
+	SlapReply *rs,
 	req_pwdexop_s *qpw,
 	Entry *e,
 	smbkrb5pwd_t *pi)
@@ -217,6 +218,16 @@ static int krb5_set_passwd(
 	if (!access_allowed(op, e, slap_schema.si_ad_userPassword, NULL,
 			    ACL_WRITE, NULL))
 		return LDAP_INSUFFICIENT_ACCESS;
+
+	if ( qpw->rs_old.bv_val ) {
+		Attribute *a = attr_find( e->e_attrs, slap_schema.si_ad_userPassword );
+
+		if ( !a || slap_passwd_check( op, e, a, &qpw->rs_old,
+			&rs->sr_text ) != LDAP_SUCCESS ) {
+			rs->sr_text = "unwilling to verify old password";
+			return LDAP_UNWILLING_TO_PERFORM;
+		}
+	}
 
 	rc = LDAP_LOCAL_ERROR;
 
@@ -451,7 +462,7 @@ static int smbkrb5pwd_exop_passwd(
 	if (SMBKRB5PWD_DO_KRB5(pi)) {
 		/* if this fails, do not bother with samba,
 		   because passwords should be kept in sync */
-		rc_krb5 = krb5_set_passwd(op, qpw, e, pi);
+		rc_krb5 = krb5_set_passwd(op, rs, qpw, e, pi);
 		if (rc_krb5 != LDAP_SUCCESS) {
 			rc = rc_krb5;
 			goto finish;
