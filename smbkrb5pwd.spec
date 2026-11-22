@@ -65,3 +65,7 @@ install -Dpm 0644 openldap/contrib/slapd-modules/smbkrb5pwd/README.md \
 %license %{_licensedir}/%{name}/LICENSE
 %doc %{_docdir}/%{name}/README.md
 %{_libdir}/openldap/smbkrb5pwd.so*
+
+%changelog
+* Sun Nov 22 2026 Timo Mäkinen <tmakinen@foo.sh> - 2.6.13-1
+- Add RPM packaging for the smbkrb5pwd module.
