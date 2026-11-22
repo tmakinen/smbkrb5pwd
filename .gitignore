@@ -1,0 +1,10 @@
+# Build artifacts
+.libs/
+*.la
+*.lo
+*.o
+
+# Vim swap files
+*.swp
+*.swo
+*.swn
