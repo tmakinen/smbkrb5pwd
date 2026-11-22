@@ -316,10 +316,25 @@ static int krb5_set_passwd(
 	}
 
 	user_uid = calloc(a_uid->a_vals[0].bv_len + 1, 1);
-        user_password = calloc(qpw->rs_new.bv_len + 1, 1);
+	if (user_uid == NULL) {
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		     "smbkrb5pwd %s : failed to allocate user UID for password change\n",
+		     op->o_log_prefix);
+		rc = LDAP_LOCAL_ERROR;
+		goto finish;
+	}
 
-        memcpy(user_uid, a_uid->a_vals[0].bv_val, a_uid->a_vals[0].bv_len);
-        memcpy(user_password, qpw->rs_new.bv_val, qpw->rs_new.bv_len);
+	user_password = calloc(qpw->rs_new.bv_len + 1, 1);
+	if (user_password == NULL) {
+		Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+		     "smbkrb5pwd %s : failed to allocate user password for password change\n",
+		     op->o_log_prefix);
+		rc = LDAP_LOCAL_ERROR;
+		goto finish;
+	}
+
+	memcpy(user_uid, a_uid->a_vals[0].bv_val, a_uid->a_vals[0].bv_len);
+	memcpy(user_password, qpw->rs_new.bv_val, qpw->rs_new.bv_len);
 
 	retval = kadm5_init_krb5_context(&context);
 	if (retval) {
