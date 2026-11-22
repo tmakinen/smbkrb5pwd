@@ -736,10 +736,12 @@ smbkrb5pwd_cf_func( ConfigArgs *c )
 	} else if ( c->op == LDAP_MOD_DELETE ) {
 		switch( c->type ) {
 		case PC_SMB_MUST_CHANGE:
+			pi->smb_must_change = 0;
 			break;
 
-                case PC_SMB_CAN_CHANGE:
-                        break;
+		case PC_SMB_CAN_CHANGE:
+			pi->smb_can_change = 0;
+			break;
 
 		case PC_SMB_ENABLE:
 			if ( !c->line ) {
