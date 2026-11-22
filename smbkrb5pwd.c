@@ -50,12 +50,17 @@
 static AttributeDescription *ad_objectclass;
 static AttributeDescription *ad_uid;
 
-#ifdef HAVE_GNUTLS
+#ifdef HAVE_OPENSSL
+#include <openssl/des.h>
+#include <openssl/evp.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#endif
+#elif defined(HAVE_GNUTLS)
 #include <gcrypt.h>
 typedef unsigned char DES_cblock[8];
 #else
-#include <openssl/des.h>
-#include <openssl/md4.h>
+#error Unsupported crypto backend.
 #endif
 #include "ldap_utf8.h"
 
@@ -117,7 +122,7 @@ static void hexify(
 	*a++ = '\0';
 }
 
-static void nthash(
+static int nthash(
 	struct berval *passwd,
 	struct berval *hash)
 {
@@ -126,22 +131,40 @@ static void nthash(
 	 * 256 UCS2 characters, not 256 bytes...
 	 */
 	char hbuf[HASHLEN];
-#ifdef HAVE_OPENSSL
-	MD4_CTX ctx;
-#endif
-
 	if (passwd->bv_len > MAX_PWLEN*2)
 		passwd->bv_len = MAX_PWLEN*2;
 
 #ifdef HAVE_OPENSSL
-	MD4_Init( &ctx );
-	MD4_Update( &ctx, passwd->bv_val, passwd->bv_len );
-	MD4_Final( (unsigned char *)hbuf, &ctx );
+	unsigned int hashlen;
+	int rc;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	OSSL_PROVIDER *legacy_provider;
+	EVP_MD *md;
+
+	legacy_provider = OSSL_PROVIDER_load(NULL, "legacy");
+	if (legacy_provider == NULL)
+		return -1;
+	md = EVP_MD_fetch(NULL, "MD4", "provider=legacy");
+	if (md == NULL) {
+		OSSL_PROVIDER_unload(legacy_provider);
+		return -1;
+	}
+	rc = EVP_Digest(passwd->bv_val, passwd->bv_len,
+			(unsigned char *)hbuf, &hashlen, md, NULL);
+	EVP_MD_free(md);
+	OSSL_PROVIDER_unload(legacy_provider);
+#else
+	rc = EVP_Digest(passwd->bv_val, passwd->bv_len,
+			(unsigned char *)hbuf, &hashlen, EVP_md4(), NULL);
+#endif
+	if (rc != 1 || hashlen != HASHLEN)
+		return -1;
 #elif defined(HAVE_GNUTLS)
 	gcry_md_hash_buffer(GCRY_MD_MD4, hbuf, passwd->bv_val, passwd->bv_len );
 #endif
 
 	hexify( hbuf, hash );
+	return 0;
 }
 
 static int
@@ -483,6 +506,7 @@ static int smbkrb5pwd_exop_passwd(
 	/* Samba stuff */
 	if ( SMBKRB5PWD_DO_SAMBA( pi ) && is_entry_objectclass(e, oc_sambaSamAccount, 0 ) ) {
 		struct berval *keys;
+		struct berval key;
 		ber_len_t j,l;
 		wchar_t *wcs, wc;
 		char *c, *new_password;
@@ -510,14 +534,24 @@ static int smbkrb5pwd_exop_passwd(
 		pwd.bv_val = (char *)wcs;
 		pwd.bv_len = l * 2;
 
+		BER_BVZERO( &key );
+		if (nthash( &pwd, &key )) {
+			Log(LDAP_DEBUG_ANY, LDAP_LEVEL_ERR,
+			     "smbkrb5pwd %s : failed to compute Samba NT hash\n",
+			     op->o_log_prefix);
+			ch_free(wcs);
+			rc = LDAP_OTHER;
+			goto finish;
+		}
+
 		ml = ch_malloc(sizeof(Modifications));
 		if (!qpw->rs_modtail) qpw->rs_modtail = &ml->sml_next;
 		ml->sml_next = qpw->rs_mods;
 		qpw->rs_mods = ml;
 
 		keys = ch_malloc( 2 * sizeof(struct berval) );
+		keys[0] = key;
 		BER_BVZERO( &keys[1] );
-		nthash( &pwd, keys );
 		
 		ml->sml_desc = ad_sambaNTPassword;
 		ml->sml_op = LDAP_MOD_REPLACE;
