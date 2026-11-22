@@ -972,7 +972,11 @@ smbkrb5pwd_db_destroy(BackendDB *be, ConfigReply *cr)
 	smbkrb5pwd_t	*pi = (smbkrb5pwd_t *)on->on_bi.bi_private;
 
 	if ( pi ) {
+		free( pi->kerberos_realm );
+		free( pi->admin_princstr );
+		ldap_pvt_thread_mutex_destroy( &pi->krb5_mutex );
 		ch_free( pi );
+		on->on_bi.bi_private = NULL;
 	}
 
 	return 0;
