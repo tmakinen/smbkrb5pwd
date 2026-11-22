@@ -15,12 +15,13 @@ using a service principal and keytab.
 
 When an LDAP password is changed, the overlay checks whether a principal named
 `uid@REALM` exists and creates it if it does not. If the principal exists, only
-its password is changed.
+its password is changed. Samba password attributes are updated only for entries
+with the `sambaSamAccount` object class.
 
 ## Known limitations
 
-- Kerberos data cannot be stored in the same objects as users because of
-  locking issues.
+- Kerberos principal data is managed in the separate MIT Kerberos database;
+  this overlay does not store Kerberos keys in LDAP user entries.
 - Principals are always named `uid@REALM`; their names cannot be customized.
 - Changing an LDAP user's `uid` does not automatically delete the old Kerberos
   principal.
@@ -36,6 +37,15 @@ cd contrib/slapd-modules/smbkrb5pwd
 make
 make install moduledir=/path/to/slapd/modules
 ```
+
+Before enabling Samba support, load a schema that defines `sambaSamAccount`,
+`sambaNTPassword`, `sambaPwdLastSet`, `sambaPwdMustChange`, and
+`sambaPwdCanChange`. With traditional `slapd.conf`, load the schema before
+starting `slapd`. The overlay fails to initialize Samba support if these schema
+elements are unavailable.
+
+With OpenSSL 3, Samba NT hash generation uses MD4 from the legacy provider.
+Ensure the OpenSSL legacy provider is installed and loadable by `slapd`.
 
 ## Configuration
 
@@ -63,6 +73,7 @@ olcOverlay: {0}smbkrb5pwd
 olcSmbKrb5PwdEnable: samba
 olcSmbKrb5PwdEnable: krb5
 olcSmbKrb5PwdMustChange: 2592012
+olcSmbKrb5PwdCanChange: 60
 olcSmbKrb5PwdKrb5Realm: EDU.EXAMPLE.ORG
 olcSmbKrb5PwdRequiredClass: posixAccount
 ```
@@ -76,7 +87,9 @@ database mdb
 suffix "dc=edu,dc=example,dc=org"
 directory /var/lib/ldap
 overlay smbkrb5pwd
-smbkrb5pwd-enable krb5
+smbkrb5pwd-enable krb5 samba
+smbkrb5pwd-must-change 2592012
+smbkrb5pwd-can-change 60
 smbkrb5pwd-realm EDU.EXAMPLE.ORG
 smbkrb5pwd-required-class posixAccount
 ```
@@ -90,9 +103,14 @@ an alias for `smbkrb5pwd-required-class`.
 | `cn=config` attribute | Description |
 | --- | --- |
 | `olcSmbKrb5PwdEnable` | Enables `samba` and/or `krb5`. If omitted, or if both values are specified, both are enabled. |
-| `olcSmbKrb5PwdMustChange` | Password expiry interval in seconds; currently applies only to Samba. |
+| `olcSmbKrb5PwdMustChange` | Samba password expiry interval in seconds, added to the time of the password change. |
+| `olcSmbKrb5PwdCanChange` | Samba minimum password age in seconds; the resulting `sambaPwdCanChange` value is the time of the password change plus this interval. |
 | `olcSmbKrb5PwdKrb5Realm` | Kerberos realm used to create user principals, for example `EDU.EXAMPLE.ORG`. |
 | `olcSmbKrb5PwdRequiredClass` | If set, the entry must have this object class for Kerberos and Samba passwords to be modified, for example `posixAccount`. |
+
+The `MustChange` and `CanChange` intervals default to zero; deleting either
+configuration value resets that interval to zero. Kerberos mode requires a
+`uid` value on each user entry and uses it to form the `uid@REALM` principal.
 
 ## Kerberos principal
 
@@ -112,8 +130,13 @@ kadmin.local -q "addprinc -randkey smbkrb5pwd/server.edu.example.org@EDU.EXAMPLE
 kadmin.local -q "ktadd -k /etc/openldap/smbkrb5pwd.keytab \
  smbkrb5pwd/server.edu.example.org@EDU.EXAMPLE.ORG"
 
-chown openldap.openldap /etc/openldap/smbkrb5pwd.keytab
+chown ldap:ldap /etc/openldap/smbkrb5pwd.keytab
 ```
+
+Grant this service principal the required add-principal and change-password
+permissions in the KDC's `kadm5.acl` file, and ensure the LDAP server can reach
+`kadmind` for the configured realm. If `slapd` runs under a different
+account/group, replace `ldap:ldap` with that account and group.
 
 ## Testing
 
@@ -125,8 +148,9 @@ ldappasswd -x -D uid=admin,ou=people,dc=edu,dc=example,dc=org -W \
   uid=user1,ou=people,dc=edu,dc=example,dc=org
 ```
 
-The overlay writes debug information to `slapd`'s log, which is commonly
-`/var/log/syslog` on Ubuntu.
+The overlay writes diagnostic messages to `slapd`'s configured logging
+destination. Depending on the system, this may be a log file, syslog, or the
+system journal.
 
 ## License
 
