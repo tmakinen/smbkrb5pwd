@@ -1,7 +1,5 @@
 # smbkrb5pwd
 
-Documentation is available on the [project wiki](https://github.com/opinsys/smbkrb5pwd/wiki).
-
 ## Overview
 
 `smbkrb5pwd` is an OpenLDAP (`slapd`) overlay that changes LDAP, Samba, and MIT
