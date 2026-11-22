@@ -34,11 +34,10 @@ jobs:
     steps:
       - name: Install Mock
         run: |
-          dnf -y install dnf-plugins-core
+          dnf -y --nodocs --setopt=install_weak_deps=False install dnf-plugins-core
           dnf config-manager --set-enabled crb
-          dnf -y install \
-            https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
-          dnf -y install \
+          dnf -y --nodocs --setopt=install_weak_deps=False install epel-release
+          dnf -y --nodocs --setopt=install_weak_deps=False install \
             curl \
             mock \
             rpm-build \
@@ -54,36 +53,37 @@ jobs:
         run: |
           version="$(rpm -q --specfile smbkrb5pwd.spec --qf '%{VERSION}\n' | sort -u)"
           archive="smbkrb5pwd-${version}.tar.gz"
-          mkdir -p "$RUNNER_TEMP/sources"
-          tar -czf "$RUNNER_TEMP/sources/$archive" \
+          package_dir="$GITHUB_WORKSPACE/package"
+          mkdir -p "$package_dir"
+          tar -czf "$package_dir/$archive" \
             --transform='s,^,smbkrb5pwd/,' \
             LICENSE Makefile README.md smbkrb5pwd.c
           curl --fail --location --retry 3 \
             "https://openldap.org/software/download/OpenLDAP/openldap-release/openldap-${version}.tgz" \
-            --output "$RUNNER_TEMP/sources/openldap-${version}.tgz"
+            --output "$package_dir/openldap-${version}.tgz"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build SRPM with Mock
         run: |
-          mkdir -p "$RUNNER_TEMP/results"
+          package_dir="$GITHUB_WORKSPACE/package"
           mock -r centos-stream+epel-10-x86_64 \
             --buildsrpm \
             --spec=smbkrb5pwd.spec \
-            --sources="$RUNNER_TEMP/sources" \
-            --resultdir="$RUNNER_TEMP/results"
+            --sources="$package_dir" \
+            --resultdir="$package_dir"
 
       - name: Build RPM with Mock
         run: |
-          srpm="$(find "$RUNNER_TEMP/results" -type f -name '*.src.rpm' -print -quit)"
-          test -n "$srpm"
+          package_dir="$GITHUB_WORKSPACE/package"
+          srpm="$(find "$package_dir" -maxdepth 1 -type f -name '*.src.rpm' -print -quit)"
           mock -r centos-stream+epel-10-x86_64 \
             --rebuild "$srpm" \
-            --resultdir="$RUNNER_TEMP/results"
+            --resultdir="$package_dir"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: smbkrb5pwd-${{ steps.source.outputs.version }}
           path: |
-            ${{ runner.temp }}/sources/smbkrb5pwd-*.tar.gz
-            ${{ runner.temp }}/results/*.rpm
+            package/smbkrb5pwd-*.tar.gz
+            package/*.rpm
           if-no-files-found: error
