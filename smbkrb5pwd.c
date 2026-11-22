@@ -449,7 +449,6 @@ static int smbkrb5pwd_exop_passwd(
 	Modifications *ml;
 	slap_overinst *on = (slap_overinst *)op->o_bd->bd_info;
 	smbkrb5pwd_t *pi = on->on_bi.bi_private;
-	char term;
 
 	/* Not the operation we expected, pass it on... */
 	if ( ber_bvcmp( &slap_EXOP_MODIFY_PASSWD, &op->ore_reqoid ) ) {
@@ -459,9 +458,6 @@ static int smbkrb5pwd_exop_passwd(
 	op->o_bd->bd_info = (BackendInfo *)on->on_info;
 	rc = be_entry_get_rw( op, &op->o_req_ndn, NULL, NULL, 0, &e );
 	if ( rc != LDAP_SUCCESS ) return rc;
-
-	term = qpw->rs_new.bv_val[qpw->rs_new.bv_len];
-	qpw->rs_new.bv_val[qpw->rs_new.bv_len] = '\0';
 
 	rc = SLAP_CB_CONTINUE;
 	if (pi->oc_requiredObjectclass &&
@@ -489,14 +485,19 @@ static int smbkrb5pwd_exop_passwd(
 		struct berval *keys;
 		ber_len_t j,l;
 		wchar_t *wcs, wc;
-		char *c, *d;
+		char *c, *new_password;
 		struct berval pwd;
 		
+		new_password = ch_malloc(qpw->rs_new.bv_len + 1);
+		memcpy(new_password, qpw->rs_new.bv_val, qpw->rs_new.bv_len);
+		new_password[qpw->rs_new.bv_len] = '\0';
+
 		/* Expand incoming UTF8 string to UCS4 */
-		l = ldap_utf8_chars(qpw->rs_new.bv_val);
+		l = ldap_utf8_chars(new_password);
 		wcs = ch_malloc((l+1) * sizeof(wchar_t));
 
-		ldap_x_utf8s_to_wcs( wcs, qpw->rs_new.bv_val, l );
+		ldap_x_utf8s_to_wcs( wcs, new_password, l );
+		ch_free(new_password);
 		
 		/* Truncate UCS4 to UCS2 */
 		c = (char *)wcs;
@@ -597,7 +598,6 @@ static int smbkrb5pwd_exop_passwd(
 	}
 finish:
 	be_entry_release_r( op, e );
-	qpw->rs_new.bv_val[qpw->rs_new.bv_len] = term;
 
 	return rc;
 }
